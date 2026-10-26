@@ -104,6 +104,8 @@ class Agent:
         self.system_prompt = system_prompt
         self.workspace = workspace
         self.policy = policy or PermissionPolicy()
+        if self.policy.workspace is None:
+            self.policy.workspace = workspace
         self.approver = approver or HeadlessApprover()
         self.events = events or AgentEvents()
         self.config = config or AgentConfig()
@@ -215,7 +217,8 @@ class Agent:
                 output = self.registry.run(call, self._tool_context())
             else:
                 output = ToolOutput(_denial_message(decision, by), is_error=True)
-        self._record("tool_result", call_id=call.id, content=output.content, is_error=output.is_error)
+        extra = {"usage": output.usage.model_dump()} if output.usage else {}
+        self._record("tool_result", call_id=call.id, content=output.content, is_error=output.is_error, **extra)
         self.events.on_tool_result(call, output)
 
     def _approve(self, kind: str, call: ToolCall) -> tuple[Decision, str]:
@@ -251,7 +254,7 @@ class Agent:
         except ProviderError as err:
             self.events.on_notice(f"压缩失败：{err}")
             return False
-        self._record("compaction", summary=response.text, upto=cut - 1)
+        self._record("compaction", summary=response.text, upto=cut - 1, usage=response.usage.model_dump())
         self.events.on_notice(f"上下文已压缩：第 {cut} 个事件之前的对话已替换为摘要。")
         return True
 

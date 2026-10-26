@@ -38,6 +38,7 @@ def test_explore_returns_only_final_summary(buggy_calc):
     tool_results = [e for e in agent.log.events if e["type"] == "tool_result"]
     assert len(tool_results) == 1
     assert tool_results[0]["content"] == SUMMARY
+    assert tool_results[0]["usage"]["input_tokens"] > 0  # 子代理的用量计入主会话预算
     log_text = agent.log.path.read_text(encoding="utf-8")
     assert SECRET_LINE not in log_text  # 中间的搜索结果没有进入主会话
     assert "def factorial" not in log_text

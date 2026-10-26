@@ -81,7 +81,7 @@ _SAFE_PREFIXES = [
 _SHELL_META = re.compile(r"[;&|><`\n]|\$")
 
 
-def classify_command(command: str) -> CommandClass:
+def classify_command(command: str, workspace: Path | None = None) -> CommandClass:
     text = command.strip()
     if any(re.search(p, text) for p in _DENY_PATTERNS):
         return "deny"
@@ -93,9 +93,29 @@ def classify_command(command: str) -> CommandClass:
         return "network"
     if not _SHELL_META.search(text):
         words = _split(text)
-        if any(tuple(words[: len(prefix)]) == prefix for prefix in _SAFE_PREFIXES):
+        if any(tuple(words[: len(prefix)]) == prefix for prefix in _SAFE_PREFIXES) and _args_stay_inside(
+            words[1:], workspace
+        ):
             return "safe"
     return "other"
+
+
+def _args_stay_inside(args: list[str], workspace: Path | None) -> bool:
+    """白名单命令参数里的路径必须留在工作区内，否则（如 cat /etc/hosts）降级为 other 走审批。"""
+    for arg in args:
+        value = arg.split("=", 1)[1] if arg.startswith("-") and "=" in arg else arg
+        if value.startswith("-") or not value:
+            continue
+        looks_outside = value.startswith(("/", "~")) or ".." in Path(value).parts
+        if not looks_outside:
+            continue
+        if workspace is None:
+            return False
+        try:
+            resolve_in_workspace(workspace, value)
+        except PermissionError:
+            return False
+    return True
 
 
 def _is_dangerous_rm(words: list[str]) -> bool:
@@ -188,6 +208,7 @@ class PermissionPolicy:
     preapproved: frozenset[str] = frozenset()  # 命令行 --allow 给出的类别：edit / exec / mcp
     remembered_tools: set[str] = field(default_factory=set)  # edit、mcp 类按工具名记住
     remembered_commands: set[str] = field(default_factory=set)  # exec 类按命令的第一个词记住
+    workspace: Path | None = None  # 用于检查白名单命令参数中的路径；Agent 构造时会自动填入
 
     def decide(self, kind: str, call: ToolCall) -> Decision:
         column = self._column(kind, call)
@@ -219,9 +240,8 @@ class PermissionPolicy:
             return True
         return False
 
-    @staticmethod
-    def _column(kind: str, call: ToolCall) -> str:
-        return classify_command(_command_of(call)) if kind == "exec" else kind
+    def _column(self, kind: str, call: ToolCall) -> str:
+        return classify_command(_command_of(call), self.workspace) if kind == "exec" else kind
 
     def _remembered(self, column: str, call: ToolCall) -> bool:
         if column == "other":

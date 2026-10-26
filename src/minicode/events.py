@@ -110,6 +110,8 @@ def reduce(events: list[Event]) -> SessionState:
         elif kind == "approval" and event["decision"] == "deny":
             denied.add(event["call_id"])
         elif kind == "tool_result":
+            if "usage" in event:  # 旁路用量（explore 子代理）只计入预算，不代表主上下文大小
+                state.usage = state.usage + Usage(**event["usage"])
             if not event["is_error"]:
                 state.consecutive_failures = 0
             elif event["call_id"] not in denied:
@@ -119,10 +121,13 @@ def reduce(events: list[Event]) -> SessionState:
                 state.chars_since_last_call += builder.add_result(result) or 0
         elif kind == "todos_updated":
             state.todos = event["todos"]
-        elif kind == "compaction" and index == last_compaction:
-            # 压缩后旧的 usage 不再代表上下文大小，改为按字符数重新估算
-            state.last_input_tokens = 0
-            state.chars_since_last_call = sum(len(m.model_dump_json()) for m in builder.messages)
+        elif kind == "compaction":
+            if "usage" in event:  # 压缩调用本身的用量计入预算
+                state.usage = state.usage + Usage(**event["usage"])
+            if index == last_compaction:
+                # 压缩后旧的 usage 不再代表上下文大小，改为按字符数重新估算
+                state.last_input_tokens = 0
+                state.chars_since_last_call = sum(len(m.model_dump_json()) for m in builder.messages)
 
     builder.close_dangling()
     state.messages = builder.messages

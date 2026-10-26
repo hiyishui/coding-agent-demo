@@ -138,3 +138,23 @@ def test_resume_continues_conversation(workspace):
     assert messages[1].text.startswith("你好")
     assert messages[2].text == "项目叫什么？"
     assert len(messages) == 6
+
+
+def test_reduce_counts_side_usage_in_budget_but_not_context_size():
+    events = [
+        make_event("session_start", session_id="s"),
+        make_event("user_message", text="调查一下"),
+        assistant(tool_use("c1", name="explore", task="x"), input_tokens=100, output_tokens=10),
+        make_event(
+            "tool_result",
+            call_id="c1",
+            content="结论",
+            is_error=False,
+            usage={"input_tokens": 500, "output_tokens": 50},
+        ),
+        assistant(TextBlock(text="好的"), input_tokens=120, output_tokens=5),
+        make_event("compaction", summary="摘要", upto=4, usage={"input_tokens": 300, "output_tokens": 30}),
+    ]
+    state = reduce(events)
+    assert (state.usage.input_tokens, state.usage.output_tokens) == (1020, 95)
+    assert state.steps == 2  # 旁路用量不算主 Agent 的步数

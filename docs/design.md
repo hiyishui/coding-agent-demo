@@ -87,8 +87,16 @@ coding-agent-demo/
 ```python
 class Provider(Protocol):
     model: str
-    def complete(self, *, system: str, messages: list[Message], tools: list[ToolSpec],
-                 max_tokens: int, on_text: Callable[[str], None] | None = None) -> ModelResponse: ...
+
+    def complete(
+        self,
+        *,
+        system: str,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        max_tokens: int,
+        on_text: Callable[[str], None] | None = None,
+    ) -> ModelResponse: ...
 ```
 
 - 错误分两类：`RetryableError(retry_after: float | None)`（429、5xx、超时、连接错误）和 `ProviderError`（其余，不重试）。重试在 agent 层统一做，适配器不重试（SDK 自带重试设为 0）。
@@ -107,16 +115,16 @@ class Provider(Protocol):
 | `user_message` | text |
 | `assistant_message` | blocks、stop_reason、usage |
 | `approval` | call_id、tool、decision（allow / deny）、by（policy / user / headless）、reason |
-| `tool_result` | call_id、content、is_error |
+| `tool_result` | call_id、content、is_error、usage（可选：工具内部调用模型的用量，如 explore 子代理） |
 | `todos_updated` | todos |
-| `compaction` | summary、upto（被摘要替换的最后一个事件下标） |
+| `compaction` | summary、upto（被摘要替换的最后一个事件下标）、usage（压缩调用的用量） |
 | `interrupted` | reason |
 | `paused` | reason（budget / consecutive_failures / max_steps） |
 
 `reduce(events) -> SessionState`（纯函数）：
 
 - `messages`：按事件重建中立消息；相邻的 `tool_result` 合并为同一条 user 消息；遇到 `compaction` 时，丢弃 `upto` 之前的消息，以一条内容为“【此前对话的摘要】…”的 user 消息开头。
-- `todos`、累计 `usage`、`steps`（assistant_message 数）、`consecutive_failures`。
+- `todos`、累计 `usage`（含 tool_result 与 compaction 中的旁路用量，只计入预算，不参与上下文大小估算）、`steps`（assistant_message 数）、`consecutive_failures`。
 - 不变式：每个 `ToolCall` 后都有对应的 `ToolResult`。归约时如发现悬空的工具调用（例如进程被杀），补一条 `is_error=True`、内容为“操作已中断，未执行”的结果。
 
 `SessionLog`：`create(workspace, meta)`、`load(workspace, session_id)`、`append(event)`（追加后立即 flush）。
@@ -180,7 +188,7 @@ run_turn(user_text):
 
 - **deny**（任何模式都拒绝）：`rm -rf /`、`rm -rf ~`、`rm -rf *` 等对根或家目录的递归删除；`curl|wget ... | sh/bash`；`git push --force` / `-f`；`mkfs`、`dd of=/dev/`；fork 炸弹；`sudo`。
 - **network**（总是需要用户审批）：首个命令或管道中任一命令是 curl、wget、ssh、scp、rsync、nc、`git push/pull/fetch/clone`、`pip/uv/npm/pnpm/yarn install|add`、`uv sync`。
-- **safe**（白名单，可自动放行）：不含 shell 元字符（`; & | > < $ \``、换行、`$(`）且命令属于：`pytest`、`python -m pytest`、`uv run pytest`、`git status/diff/log/show/branch`、`ls`、`pwd`、`rg`、`grep`、`head`、`tail`、`wc`、`cat`。
+- **safe**（白名单，可自动放行）：参数中的路径都在工作区内、不含 shell 元字符（`; & | > < $ \``、换行、`$(`）且命令属于：`pytest`、`python -m pytest`、`uv run pytest`、`git status/diff/log/show/branch`、`ls`、`pwd`、`rg`、`grep`、`head`、`tail`、`wc`、`cat`。
 - 其余为 **other**。
 
 ### 运行模式与决策矩阵
@@ -242,7 +250,7 @@ minicode [-C WORKSPACE] [--provider mock|anthropic|openai] [--model MODEL]
 
 全部离线，用 Mock 或纯函数：
 
-- `test_permissions.py`：路径越界（`..`、绝对路径、指向外部的符号链接）；命令分类各类样例；模式决策矩阵；“总是允许”记忆；无头 `--allow`。
+- `test_permissions.py`：路径越界（`..`、绝对路径、指向外部的符号链接）；命令分类各类样例（含白名单命令参数越界）；模式决策矩阵；“总是允许”记忆；无头 `--allow`。
 - `test_tools.py`：read_file 分页与提示；list_files 忽略规则与上限；search_code（强制走 Python 回退分支也要测）；edit_file 的不存在 / 不唯一 / 相同 / replace_all / 成功片段；create_file 覆盖保护；run_command 退出码、超时、截断。
 - `test_events.py`：JSONL 往返；归约器重建消息、合并 tool_result、压缩替换、悬空工具调用补结果；resume 后继续对话。
 - `test_agent.py`：用 `fix_buggy_calc.json` 在 buggy-calc 的临时副本上端到端运行（auto-edit 模式，自动允许 pytest），结束后真实 pytest 通过；拒绝审批时模型收到 is_error；连续 3 次失败暂停；max_steps 暂停；可重试错误按退避重试后成功（用可注入的 sleep）；中断后 tool_use/tool_result 配对。

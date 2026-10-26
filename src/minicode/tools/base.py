@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from ..messages import ToolCall, ToolSpec
+from ..messages import ToolCall, ToolSpec, Usage
 from ..permissions import resolve_in_workspace
 
 ToolKind = Literal["read", "edit", "exec", "meta", "mcp"]
@@ -24,6 +24,7 @@ DEFAULT_MAX_OUTPUT_CHARS = 20_000
 class ToolOutput:
     content: str
     is_error: bool = False
+    usage: Usage | None = None  # 工具内部调用模型产生的用量（如 explore 子代理），计入会话预算
 
 
 @dataclass
@@ -126,4 +127,4 @@ class ToolRegistry:
             output = ToolOutput(str(err), is_error=True)
         except Exception as err:  # 工具异常不能打断 Agent 循环，转成错误结果交给模型
             output = ToolOutput(f"工具执行出错：{type(err).__name__}: {err}", is_error=True)
-        return ToolOutput(truncate(output.content, ctx.max_output_chars), output.is_error)
+        return ToolOutput(truncate(output.content, ctx.max_output_chars), output.is_error, output.usage)

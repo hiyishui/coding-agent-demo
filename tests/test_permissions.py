@@ -218,3 +218,25 @@ def test_allow_only_covers_given_category():
     policy = PermissionPolicy(mode="default", preapproved=frozenset({"edit"}))
     assert policy.decide("edit", EDIT).action == "allow"
     assert policy.decide("exec", OTHER).action == "ask"
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("cat calc.py", "safe"),
+        ("cat ./src/../calc.py", "safe"),
+        ("cat /etc/hosts", "other"),
+        ("head -n 5 ~/.ssh/id_rsa", "other"),
+        ("grep -r secret ../other-project", "other"),
+        ("pytest --rootdir=/tmp", "other"),
+    ],
+)
+def test_safe_command_arguments_must_stay_in_workspace(tmp_path, command, expected):
+    (tmp_path / "src").mkdir()
+    assert classify_command(command, tmp_path) == expected
+
+
+def test_policy_asks_for_whitelisted_command_reading_outside_workspace(tmp_path):
+    policy = PermissionPolicy(mode="default", workspace=tmp_path)
+    decision = policy.decide("exec", tool_call("run_command", command="cat /etc/hosts"))
+    assert (decision.action, decision.column) == ("ask", "other")

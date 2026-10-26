@@ -49,9 +49,10 @@ def make_explore_tool(
         result = sub_agent.run_turn(args["task"])
         if result.status == "interrupted":
             raise KeyboardInterrupt
+        usage = sub_agent.state.usage
         if result.status != "done":
-            return ToolOutput(f"子代理未能完成调查（{result.reason}）。", is_error=True)
-        return ToolOutput(result.text or "（子代理没有给出结论）")
+            return ToolOutput(f"子代理未能完成调查（{result.reason}）。", is_error=True, usage=usage)
+        return ToolOutput(result.text or "（子代理没有给出结论）", usage=usage)
 
     return Tool(
         name="explore",

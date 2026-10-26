@@ -13,7 +13,11 @@ from pathlib import Path
 
 from .messages import Usage
 
-# ---- 模型默认值与参数表（占位值，发布前需按厂商文档核实）----
+# ---- 模型默认值与参数表（2026-10 按厂商文档核实，价格会变动，以官方为准）----
+# Anthropic: https://platform.claude.com/docs/en/models/overview
+# OpenAI:    https://developers.openai.com/api/docs/models/gpt-5.6-terra
+# 注意：gpt-6-astra、gpt-6.1-sol 只支持经 Responses API 调用工具，本项目的 OpenAI 适配器走
+# Chat Completions，所以默认选用支持 Chat Completions 的 gpt-5.6-terra。
 
 DEFAULT_MODELS: dict[str, str] = {
     "mock": "mock",
@@ -32,8 +36,10 @@ class ModelInfo:
 MODEL_TABLE: dict[str, ModelInfo] = {
     # Mock 的窗口故意设得很小，便于演示和测试自动压缩
     "mock": ModelInfo(context_window=8_000),
-    "claude-sonnet-5-5": ModelInfo(context_window=200_000, input_usd_per_mtok=3.0, output_usd_per_mtok=15.0),
-    "gpt-5.6-terra": ModelInfo(context_window=400_000, input_usd_per_mtok=1.25, output_usd_per_mtok=10.0),
+    "claude-opus-5-5": ModelInfo(context_window=1_000_000, input_usd_per_mtok=4.0, output_usd_per_mtok=20.0),
+    "claude-sonnet-5-5": ModelInfo(context_window=1_000_000, input_usd_per_mtok=2.0, output_usd_per_mtok=10.0),
+    # 输入超过 272K token 时该请求按更高单价计费，这里不细分
+    "gpt-5.6-terra": ModelInfo(context_window=1_050_000, input_usd_per_mtok=2.0, output_usd_per_mtok=12.0),
 }
 
 UNKNOWN_MODEL = ModelInfo(context_window=200_000)
