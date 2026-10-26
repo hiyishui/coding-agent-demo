@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "toy": {
+      "command": "python",
+      "args": ["examples/toy_mcp_server.py"],
+      "env": {}
+    }
+  }
+}

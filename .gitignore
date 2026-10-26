@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# 本地环境变量（含密钥），只提交 .env.example
+.env
+
+# minicode 的会话日志与 MCP 日志
+.minicode/

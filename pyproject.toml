@@ -1,0 +1,36 @@
+[project]
+name = "minicode"
+version = "0.1.0"
+description = "《如何设计和开发一款高效实用的编程 Agent》的参考实现：一个终端编程 Agent"
+readme = "README.md"
+authors = [
+    { name = "yishwu", email = "yishwu@cisco.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.3.0",
+    "openai>=3.37.0",
+    "pydantic>=2.14.1",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+minicode = "minicode.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
