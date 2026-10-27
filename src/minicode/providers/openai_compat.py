@@ -26,7 +26,11 @@ def to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, A
     result: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for message in messages:
         if message.role == "assistant":
-            entry: dict[str, Any] = {"role": "assistant", "content": message.text or None}
+            # 只有带 tool_calls 时 content 才能为 null；空回复发 null 会被接口拒绝
+            entry: dict[str, Any] = {
+                "role": "assistant",
+                "content": message.text or (None if message.tool_calls else ""),
+            }
             if message.tool_calls:
                 entry["tool_calls"] = [
                     {

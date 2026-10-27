@@ -368,3 +368,10 @@ def test_openai_provider_streams_with_sdk():
     assert streamed == ["好的"]
     assert response.tool_calls[0].arguments == {"path": "a.py"} and response.usage.input_tokens == 11
     assert sent["stream_options"] == {"include_usage": True} and sent["max_completion_tokens"] == 100
+
+
+def test_openai_empty_assistant_reply_uses_empty_string_not_null():
+    empty = Message(role="assistant", blocks=[])
+    with_call = Message(role="assistant", blocks=[ToolCall(id="c", name="x", arguments={})])
+    assert to_openai_messages("S", [empty])[1]["content"] == ""
+    assert to_openai_messages("S", [with_call])[1]["content"] is None

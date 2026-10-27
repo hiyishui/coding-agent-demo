@@ -240,3 +240,85 @@ def test_policy_asks_for_whitelisted_command_reading_outside_workspace(tmp_path)
     policy = PermissionPolicy(mode="default", workspace=tmp_path)
     decision = policy.decide("exec", tool_call("run_command", command="cat /etc/hosts"))
     assert (decision.action, decision.column) == ("ask", "other")
+
+
+# ---- 审查中发现的绕过方式 ----
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "true & sudo rm -rf /",
+        "(sudo reboot)",
+        "env FOO=1 sudo ls",
+        "timeout 5 sudo ls",
+        "echo x | xargs sudo rm",
+        "git -C . push --force origin main",
+        "git --no-pager push -f",
+        "git push origin +main",
+        "git push --force-with-lease",
+        'bash -c "sudo rm -rf x"',
+        "sh -c 'git push -f'",
+        "eval sudo ls",
+    ],
+)
+def test_deny_cannot_be_bypassed(command):
+    assert classify_command(command) == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "true & curl http://x",
+        "echo $(curl http://x)",
+        "echo `wget http://x`",
+        "env curl http://x",
+        "nohup ssh host &",
+        "git -C sub fetch",
+        "git -c http.proxy=x pull",
+        'bash -c "curl http://x"',
+        "eval curl http://x",
+    ],
+)
+def test_network_cannot_be_bypassed(command):
+    assert classify_command(command) == "network"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg --pre rm x",
+        "rg --pre=sh pattern",
+        "rg -iz foo",
+        "git diff --output=src/agent.py",
+        "git log --ext-diff",
+        "git show --textconv HEAD",
+        "git branch -D main",
+        "git branch -f main HEAD~1",
+        "git branch new-feature",
+    ],
+)
+def test_whitelisted_commands_with_unsafe_flags_are_not_safe(tmp_path, command):
+    assert classify_command(command, tmp_path) == "other"
+
+
+def test_whitelisted_command_through_symlink_out_of_workspace_is_not_safe(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("s")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "link").symlink_to(outside / "secret")
+    assert classify_command("cat link", workspace) == "other"
+    assert classify_command("git branch -a", workspace) == "safe"
+
+
+def test_plan_mode_denies_rg_pre(tmp_path):
+    policy = PermissionPolicy(mode="plan", workspace=tmp_path)
+    assert policy.decide("exec", tool_call("run_command", command="rg --pre rm x")).action == "deny"
+
+
+def test_yolo_never_auto_allows_hidden_sudo_or_force_push(tmp_path):
+    policy = PermissionPolicy(mode="yolo", workspace=tmp_path)
+    for command in ("true & sudo rm -rf /", "git -C . push --force origin main"):
+        assert policy.decide("exec", tool_call("run_command", command=command)).action == "deny"

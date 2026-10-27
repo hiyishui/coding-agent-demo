@@ -101,7 +101,7 @@ class Provider(Protocol):
 
 - 错误分两类：`RetryableError(retry_after: float | None)`（429、5xx、超时、连接错误）和 `ProviderError`（其余，不重试）。重试在 agent 层统一做，适配器不重试（SDK 自带重试设为 0）。
 - **anthropic.py**：Messages API，流式（`messages.stream`），`on_text` 逐段回调。转换：`ToolCall` ↔ `tool_use` 块（`input` 是对象）；`ToolResult` → user 消息里的 `tool_result` 块（`is_error`）。系统提示词与最后一个工具定义加 `cache_control: {"type": "ephemeral"}` 以命中提示词缓存。`stop_reason` 映射：`tool_use`、`end_turn`/`stop_sequence` → `end_turn`、`max_tokens`、`refusal`；`pause_turn` 视为 `end_turn`（不使用服务端工具）。
-- **openai_compat.py**：Chat Completions（兼容 OpenAI、DeepSeek、Qwen、Ollama、vLLM），`base_url` 可配置，流式。转换：`ToolCall` ↔ `tool_calls`（`arguments` 是 **JSON 字符串**，解析失败时把原文放进 `{"_raw": ...}` 并由工具层报参数错误）；`ToolResult` → 独立的 `role: "tool"` 消息（`tool_call_id`），`is_error` 时在内容前加 `ERROR: `；同一条 user 消息里的文本块放在 tool 消息之后。流式时按 `index` 累积 `tool_calls` 的增量。`finish_reason` 映射：`tool_calls` → `tool_use`、`length` → `max_tokens`、`content_filter` → `refusal`、其余 → `end_turn`。
+- **openai_compat.py**：Chat Completions（兼容 OpenAI、DeepSeek、Qwen、Ollama、vLLM），`base_url` 可配置，流式。转换：`ToolCall` ↔ `tool_calls`（`arguments` 是 **JSON 字符串**，解析失败时把原文放进 `{"_raw": ...}` 并由工具层报参数错误）；`ToolResult` → 独立的 `role: "tool"` 消息（`tool_call_id`），`is_error` 时在内容前加 `ERROR: `；同一条 user 消息里的文本块放在 tool 消息之后；助手消息没有文本时，带 tool_calls 则 `content` 为 null，否则为空字符串（null 会被接口拒绝）。流式时按 `index` 累积 `tool_calls` 的增量。`finish_reason` 映射：`tool_calls` → `tool_use`、`length` → `max_tokens`、`content_filter` → `refusal`、其余 → `end_turn`。
 - 两个适配器都把“请求体构造”和“响应解析”写成纯函数（如 `to_anthropic_messages`、`from_openai_message`），以便离线单元测试。
 - **mock.py**：`ScriptedProvider`，从 JSON 脚本按顺序回放响应，不看输入；脚本项格式：`{"text": "...", "tool_calls": [{"name": "...", "arguments": {...}}]}`，`id` 自动生成；脚本耗尽时返回 `end_turn` 文本“（Mock 脚本已结束）”。另提供 `compact` 用途：当 `complete` 以 `tools=[]` 且系统提示词以压缩标记开头时，不消耗脚本，返回根据消息确定性生成的摘要。usage 按字符数 / 4 估算。`on_text` 按词流式输出。
 
@@ -184,11 +184,22 @@ run_turn(user_text):
 
 ### 命令分类
 
-`classify_command(cmd) -> "deny" | "network" | "safe" | "other"`：
+`classify_command(cmd, workspace) -> "deny" | "network" | "safe" | "other"`：
 
-- **deny**（任何模式都拒绝）：`rm -rf /`、`rm -rf ~`、`rm -rf *` 等对根或家目录的递归删除；`curl|wget ... | sh/bash`；`git push --force` / `-f`；`mkfs`、`dd of=/dev/`；fork 炸弹；`sudo`。
-- **network**（总是需要用户审批）：首个命令或管道中任一命令是 curl、wget、ssh、scp、rsync、nc、`git push/pull/fetch/clone`、`pip/uv/npm/pnpm/yarn install|add`、`uv sync`。
-- **safe**（白名单，可自动放行）：参数中的路径都在工作区内、不含 shell 元字符（`; & | > < $ \``、换行、`$(`）且命令属于：`pytest`、`python -m pytest`、`uv run pytest`、`git status/diff/log/show/branch`、`ls`、`pwd`、`rg`、`grep`、`head`、`tail`、`wc`、`cat`。
+先切分、再归一化，再判断：
+
+- **切分**：按 `|`、`||`、`&&`、`&`、`;`、换行、`(`、`)`、`$(`、反引号切成片段，逐段判断，整条命令取最危险的结果。
+- **归一化**：剥掉开头的环境变量赋值和包装命令（`env`、`command`、`exec`、`nohup`、`time`、`nice`、`timeout`、`xargs`、`stdbuf` 及其选项）；`git` 去掉子命令前的全局选项（`-C X`、`-c k=v`、`--no-pager`、`--git-dir=…` 等）；`sh/bash/zsh/dash -c "…"` 与 `eval …` 递归检查其中的命令（嵌套超过 3 层按 deny 处理）。
+
+分类：
+
+- **deny**（任何模式都拒绝）：`rm -rf /`、`rm -rf ~`、`rm -rf *` 等对根或家目录的递归删除；`curl|wget ... | sh/bash`；`git push` 带 `-f`、`--force*` 或 `+refspec`；`mkfs`、`dd of=/dev/`；fork 炸弹；`sudo`。
+- **network**（总是需要用户审批）：任一片段是 curl、wget、ssh、scp、rsync、nc、`git push/pull/fetch/clone`、`pip/uv/npm/pnpm/yarn install|add`、`uv sync`。
+- **safe**（白名单，可自动放行）：同时满足
+  - 不含 shell 元字符（`; & | > < $ \``、换行、`$(`）；
+  - 命令属于：`pytest`、`python -m pytest`、`uv run pytest`、`git status/diff/log/show/branch`、`ls`、`pwd`、`rg`、`grep`、`head`、`tail`、`wc`、`cat`；
+  - 不带能执行程序或写文件的参数：`rg --pre/-z/--search-zip/--hostname-bin`，`git --output/--ext-diff/--textconv`；`git branch` 只允许列出分支的参数；
+  - 每个非选项参数按路径解析（展开符号链接）后都在工作区内。
 - 其余为 **other**。
 
 ### 运行模式与决策矩阵

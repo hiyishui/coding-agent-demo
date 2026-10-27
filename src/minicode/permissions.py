@@ -80,41 +80,129 @@ _SAFE_PREFIXES = [
 
 _SHELL_META = re.compile(r"[;&|><`\n]|\$")
 
+# 切分命令片段：管道、&&、||、后台 &、分号、换行、子 shell、命令替换
+_SEGMENT_SPLIT = re.compile(r"\|\|?|&&?|;|\n|\$\(|[()`]")
+# 包装命令：真正执行的是它后面的命令，判断前先剥掉
+_WRAPPERS = {"env", "command", "builtin", "exec", "nohup", "time", "nice", "timeout", "xargs", "stdbuf"}
+_SHELLS = {"sh", "bash", "zsh", "dash"}
+# git 的全局选项出现在子命令之前，其中这些还带一个值
+_GIT_GLOBAL_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
+
+# 白名单命令里能执行其他程序或写文件的参数：出现即降级为 other
+_UNSAFE_FLAGS: dict[str, tuple[str, ...]] = {
+    "rg": ("--pre", "-z", "--search-zip", "--hostname-bin"),
+    "git": ("--output", "--ext-diff", "--textconv", "--exec-path"),
+}
+_GIT_BRANCH_LIST_FLAGS = {"-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose", "--list", "--show-current"}
+
 
 def classify_command(command: str, workspace: Path | None = None) -> CommandClass:
     text = command.strip()
-    if any(re.search(p, text) for p in _DENY_PATTERNS):
-        return "deny"
-    segments = [_split(seg) for seg in re.split(r"\|\|?|&&|;|\n", text)]
-    segments = [words for words in segments if words]
-    if any(_is_dangerous_rm(words) or Path(words[0]).name == "sudo" for words in segments):
-        return "deny"
-    if any(_is_network(words) for words in segments):
-        return "network"
+    risk = _risk(text)
+    if risk:
+        return risk
     if not _SHELL_META.search(text):
         words = _split(text)
-        if any(tuple(words[: len(prefix)]) == prefix for prefix in _SAFE_PREFIXES) and _args_stay_inside(
-            words[1:], workspace
+        if (
+            any(tuple(words[: len(prefix)]) == prefix for prefix in _SAFE_PREFIXES)
+            and not _has_unsafe_flags(words)
+            and _args_stay_inside(words[1:], workspace)
         ):
             return "safe"
     return "other"
 
 
+def _risk(text: str, depth: int = 0) -> Literal["deny", "network"] | None:
+    """整条命令里最危险的片段：deny 优先于 network；都没有返回 None。"""
+    if any(re.search(p, text) for p in _DENY_PATTERNS):
+        return "deny"
+    found: Literal["deny", "network"] | None = None
+    for segment in _SEGMENT_SPLIT.split(text):
+        words = _normalize(_split(segment))
+        if not words:
+            continue
+        name, rest = Path(words[0]).name, words[1:]
+        if name == "sudo" or _is_dangerous_rm(words) or _is_force_push(words):
+            return "deny"
+        inner = _inner_script(name, rest)
+        if inner is not None:  # bash -c "..."、eval ...：递归检查里面的命令
+            if depth >= 3:  # 层层嵌套多半是在绕过检查，按最坏情况处理
+                return "deny"
+            sub = _risk(inner, depth + 1)
+            if sub == "deny":
+                return "deny"
+            found = found or sub
+        elif _is_network(words):
+            found = "network"
+    return found
+
+
+def _normalize(words: list[str]) -> list[str]:
+    """剥掉环境变量赋值、包装命令（env、timeout、xargs……）和 git 全局选项，露出真正的命令。"""
+    words = list(words)
+    while words:
+        if re.match(r"^[A-Za-z_]\w*=", words[0]):
+            words = words[1:]
+        elif Path(words[0]).name in _WRAPPERS:
+            words = words[1:]
+            while words and (words[0].startswith("-") or re.match(r"^[A-Za-z_]\w*=|^\d+(\.\d+)?[smhd]?$", words[0])):
+                words = words[1:]
+        else:
+            break
+    if words and Path(words[0]).name == "git":
+        rest = words[1:]
+        while rest and rest[0].startswith("-"):
+            option = rest.pop(0)
+            if option in _GIT_GLOBAL_WITH_VALUE and rest:
+                rest.pop(0)
+        words = [words[0], *rest]
+    return words
+
+
+def _inner_script(name: str, rest: list[str]) -> str | None:
+    if name in _SHELLS and "-c" in rest and rest.index("-c") + 1 < len(rest):
+        return rest[rest.index("-c") + 1]
+    if name == "eval":
+        return " ".join(rest)
+    return None
+
+
+def _is_force_push(words: list[str]) -> bool:
+    if Path(words[0]).name != "git" or words[1:2] != ["push"]:
+        return False
+    return any(w in ("-f", "--force") or w.startswith(("--force", "+")) for w in words[2:])
+
+
+def _has_unsafe_flags(words: list[str]) -> bool:
+    name, args = Path(words[0]).name, words[1:]
+    if name == "git" and args[:1] == ["branch"]:  # git branch 只允许列出分支，-D、-f、-m 等一律降级
+        return any(a not in _GIT_BRANCH_LIST_FLAGS for a in args[1:])
+    for flag in _UNSAFE_FLAGS.get(name, ()):
+        for arg in args:
+            if arg == flag or arg.startswith(flag + "="):
+                return True
+            # 合并的短选项，如 rg -iz
+            if len(flag) == 2 and arg.startswith("-") and not arg.startswith("--") and flag[1] in arg[1:]:
+                return True
+    return False
+
+
 def _args_stay_inside(args: list[str], workspace: Path | None) -> bool:
-    """白名单命令参数里的路径必须留在工作区内，否则（如 cat /etc/hosts）降级为 other 走审批。"""
+    """白名单命令的每个非选项参数都按路径解析（含符号链接），指向工作区外则降级为 other 走审批。"""
     for arg in args:
         value = arg.split("=", 1)[1] if arg.startswith("-") and "=" in arg else arg
         if value.startswith("-") or not value:
             continue
-        looks_outside = value.startswith(("/", "~")) or ".." in Path(value).parts
-        if not looks_outside:
-            continue
         if workspace is None:
-            return False
+            if value.startswith(("/", "~")) or ".." in Path(value).parts:
+                return False
+            continue
         try:
             resolve_in_workspace(workspace, value)
         except PermissionError:
             return False
+        except (OSError, ValueError):  # 不是合法路径的参数（如正则模式），不涉及文件
+            continue
     return True
 
 
