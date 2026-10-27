@@ -1,10 +1,18 @@
 # minicode 设计文档
 
-minicode 是文章《如何设计和开发一款高效实用的编程 Agent》的参考实现：一个运行在终端里的编程 Agent，能读代码、搜代码、改代码、跑命令，并在权限策略和人工审批的约束下完成任务。
+minicode 是一个运行在终端里的编程 Agent，能读代码、搜代码、改代码、跑命令，并在权限策略和人工审批的约束下完成任务。它是文章《[如何设计和开发一款高效实用的 Agent：理论、原则与代码](https://yishui.pages.dev/#/e077cfd49ac75efabd60dca729248876)》的参考实现：文章讲“为什么这样设计”，本文档讲“具体做什么、怎么做”。
 
 本文档记录功能范围、架构和每个模块的实现约定，是实现与评审的依据。
 
 ## 1. 目标与非目标
+
+### 用户故事
+
+1. 作为开发者，我在终端里说“修复失败的测试”，Agent 自己找到问题、改代码、跑测试验证，改文件前先问我。
+2. 我想先看方案再动手：切到只读的 plan 模式，让它只调查、只出方案。
+3. 我在 CI 里用 `--task` 无头运行，用退出码判断结果；没人审批的操作一律拒绝，不会卡住。
+4. 任务做到一半我按了 Ctrl-C，或者进程被杀，之后 `--resume` 能接着做。
+5. 团队有内部工具，用 MCP 接进来，不用改 Agent 代码。
 
 ### 目标
 
@@ -18,10 +26,19 @@ minicode 是文章《如何设计和开发一款高效实用的编程 Agent》�
 
 ### 非目标
 
-- 不使用 LangChain 等 Agent 框架；循环、工具、状态全部自己掌控。
-- 不做可写、可并行的多代理；不做向量索引；不内置 Docker 沙箱（README 给出在容器中运行的方法）。
-- 不做评测框架（评测方法论写在文章中）；仓库只包含 pytest 单元测试。
-- 不支持 MCP 旧版 `initialize` 握手、资源、提示词、Sampling、Elicitation、Roots；MCP 只用工具。
+| 不做 | 理由 |
+| --- | --- |
+| 使用 LangChain 等 Agent 框架 | 循环、工具、状态要自己掌控，出问题才能查到底 |
+| 可写、可并行的多代理 | 多个代理同时改一个仓库，需要冲突合并和 worktree 隔离，复杂度暴涨 |
+| 向量索引 | 代码有结构，grep 加按需读取更准、更新也及时 |
+| 内置 Docker 沙箱 | 会提高上手门槛；README 给出在容器中运行的方法 |
+| 评测框架 | 评测方法写在文章中；仓库只包含 pytest 单元测试 |
+| MCP 旧版 `initialize` 握手、资源、提示词、Sampling、Elicitation、Roots | 只用工具；新规范已弃用 Sampling 与 Roots |
+
+### 默认模型
+
+- Anthropic：`claude-sonnet-5-5`；OpenAI 兼容：`gpt-5.6-terra`。窗口与单价见 `config.py`（2026-10 按厂商文档核实）。
+- 不默认使用 GPT-6 系列：它们只支持经 Responses API 调用工具，而本项目的 OpenAI 适配器走 Chat Completions，以兼容 DeepSeek、通义千问、Ollama、vLLM 等更多服务。
 
 ## 2. 技术栈与工程约定
 
@@ -102,6 +119,17 @@ class Provider(Protocol):
 - 错误分两类：`RetryableError(retry_after: float | None)`（429、5xx、超时、连接错误）和 `ProviderError`（其余，不重试）。重试在 agent 层统一做，适配器不重试（SDK 自带重试设为 0）。
 - **anthropic.py**：Messages API，流式（`messages.stream`），`on_text` 逐段回调。转换：`ToolCall` ↔ `tool_use` 块（`input` 是对象）；`ToolResult` → user 消息里的 `tool_result` 块（`is_error`）。系统提示词与最后一个工具定义加 `cache_control: {"type": "ephemeral"}` 以命中提示词缓存。`stop_reason` 映射：`tool_use`、`end_turn`/`stop_sequence` → `end_turn`、`max_tokens`、`refusal`；`pause_turn` 视为 `end_turn`（不使用服务端工具）。
 - **openai_compat.py**：Chat Completions（兼容 OpenAI、DeepSeek、Qwen、Ollama、vLLM），`base_url` 可配置，流式。转换：`ToolCall` ↔ `tool_calls`（`arguments` 是 **JSON 字符串**，解析失败时把原文放进 `{"_raw": ...}` 并由工具层报参数错误）；`ToolResult` → 独立的 `role: "tool"` 消息（`tool_call_id`），`is_error` 时在内容前加 `ERROR: `；同一条 user 消息里的文本块放在 tool 消息之后；助手消息没有文本时，带 tool_calls 则 `content` 为 null，否则为空字符串（null 会被接口拒绝）。流式时按 `index` 累积 `tool_calls` 的增量。`finish_reason` 映射：`tool_calls` → `tool_use`、`length` → `max_tokens`、`content_filter` → `refusal`、其余 → `end_turn`。
+
+两家协议的主要差异（全部收敛在适配器里，循环只看中立消息）：
+
+| 差异点 | Anthropic Messages | OpenAI 兼容 Chat Completions |
+| --- | --- | --- |
+| 调用参数 | `input` 是对象 | `arguments` 是 JSON 字符串，要解析，并处理解析失败 |
+| 工具结果 | user 消息里的 `tool_result` 块 | 独立的 `role: tool` 消息 |
+| 错误结果 | `is_error: true` | 没有该字段，用内容前缀 `ERROR: ` 标明 |
+| 是否要调工具 | `stop_reason` 为 `tool_use` | `finish_reason` 为 `tool_calls` |
+| 流式工具调用 | 内容块事件 | 按 `index` 累积参数增量 |
+
 - 两个适配器都把“请求体构造”和“响应解析”写成纯函数（如 `to_anthropic_messages`、`from_openai_message`），以便离线单元测试。
 - **mock.py**：`ScriptedProvider`，从 JSON 脚本按顺序回放响应，不看输入；脚本项格式：`{"text": "...", "tool_calls": [{"name": "...", "arguments": {...}}]}`，`id` 自动生成；脚本耗尽时返回 `end_turn` 文本“（Mock 脚本已结束）”。另提供 `compact` 用途：当 `complete` 以 `tools=[]` 且系统提示词以压缩标记开头时，不消耗脚本，返回根据消息确定性生成的摘要。usage 按字符数 / 4 估算。`on_text` 按词流式输出。
 
@@ -204,6 +232,15 @@ run_turn(user_text):
 
 ### 运行模式与决策矩阵
 
+| 模式 | 适用场景 | 行为概要 |
+| --- | --- | --- |
+| plan | 先看方案 | 只读；任何修改和非白名单命令都拒绝 |
+| default | 日常使用 | 改文件、跑非白名单命令前都询问 |
+| auto-edit | 信任它改代码 | 改文件自动放行，命令仍要询问 |
+| yolo | 在容器里放手干 | 除硬拒绝和联网命令外全部放行 |
+
+具体决策：
+
 | kind / 类别 | plan | default | auto-edit | yolo |
 | --- | --- | --- | --- | --- |
 | read、meta（含 explore、update_todos） | allow | allow | allow | allow |
@@ -269,3 +306,17 @@ minicode [-C WORKSPACE] [--provider mock|anthropic|openai] [--model MODEL]
 - `test_providers.py`：两个适配器的请求构造与响应解析（用手写的响应样例，不发网络请求），包括 OpenAI `arguments` 字符串解析失败、`tool` 角色消息顺序、Anthropic `is_error` 与 cache_control。
 - `test_explore.py`：子代理只能用只读工具，主会话日志里只有最终摘要。
 - `test_mcp.py`：启动 `toy_mcp_server.py` 子进程，完成 discover / list / call，工具以 `mcp__toy__word_count` 注册并可调用；服务器报错映射为 is_error。
+
+## 15. 审查记录：发现过的权限绕过
+
+以下问题都在代码审查中发现、已修复，并在 `tests/test_permissions.py` 中有对应用例：
+
+| 绕过方式 | 原因 | 修复 |
+| --- | --- | --- |
+| `cat /etc/hosts`、经仓库内符号链接读外部文件 | 白名单只看命令名，不检查参数 | 每个非选项参数按路径解析（展开符号链接），越界即降级为 other |
+| `rg --pre rm x`（plan 模式下也被放行）、`git diff --output=…` | 白名单命令的某些选项能执行程序或写文件 | 这类选项出现即降级为 other；`git branch` 只允许列出分支 |
+| `true & sudo rm -rf /`、`(sudo reboot)`、`echo $(curl …)` | 只按 `\|`、`&&`、`;` 切分 | 按 `&`、子 shell、命令替换切分 |
+| `env curl …`、`timeout 5 sudo …`、`xargs sudo …` | 只看片段首词 | 剥掉包装命令后再判断 |
+| `git -C . push --force`、`git push origin +main` | git 全局选项、`+refspec` 未处理 | 去掉全局选项；`+refspec` 与 `--force*` 都视为强推 |
+| `bash -c "sudo …"`、`eval curl …` | 未检查内层命令 | 递归检查（超过 3 层按 deny） |
+| explore 子代理、压缩的 token 不计入预算 | 只统计主循环的模型调用 | 用量写入 `tool_result` / `compaction` 事件，只计入预算 |
