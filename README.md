@@ -8,9 +8,9 @@
 - **可恢复**：会话以 JSONL 事件日志持久化，状态由纯函数从日志重建，`--resume` 从中断处继续。
 - **上下文工程**：AGENTS.md 项目指令、按需检索、工具输出截断、自动压缩、todo 清单、只读 explore 子代理。
 - **MCP**：最小 stdio MCP 客户端（只支持 2026-07-28 版规范），把外部工具并入工具注册表。
-- 163 个单元 / 集成测试，全部离线，几秒跑完。
+- 205 个单元 / 集成测试，全部离线，几秒跑完。
 
-设计说明见 [docs/design.md](./docs/design.md)。
+设计说明见 [docs/design.md](./docs/design.md)（做什么，含业务流程的序列图）；想逐个模块读懂源码，见 [docs/code-walkthrough.md](./docs/code-walkthrough.md)（代码导读）。
 
 ## 快速开始
 
