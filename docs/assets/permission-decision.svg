@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" role="img" aria-labelledby="title desc">
+  <title id="title">PermissionPolicy.decide 的决策流程</title>
+  <desc id="desc">读取和 meta 类直接放行，硬拒绝命令直接拒绝；其余查运行模式矩阵。ask 时，先检查是否已记住或预先批准，最后交给人审批。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#64748b"/></marker>
+    <style>
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.edge{fill:none;stroke:#64748b;stroke-width:1.8;marker-end:url(#arrow)}
+      .action{fill:#f8fafc;stroke:#94a3b8;stroke-width:1.5}.decision{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.7}.allow{fill:#dcfce7;stroke:#16a34a;stroke-width:1.7}.deny{fill:#fee2e2;stroke:#dc2626;stroke-width:1.7}.ask{fill:#fef3c7;stroke:#d97706;stroke-width:1.7}
+      .label{font-size:14px;font-weight:650;fill:#0f172a;text-anchor:middle}.branch{font-size:13px;fill:#475569}
+    </style>
+  </defs>
+  <rect width="900" height="700" rx="14" fill="#fff"/>
+  <path class="edge" d="M450 73V112"/>
+  <path class="edge" d="M390 158H245V198"/><path class="edge" d="M510 158H655V198"/>
+  <path class="edge" d="M185 245V290H95V340"/><path class="edge" d="M715 245H805V340"/>
+  <path class="edge" d="M595 245H500V340"/>
+  <path class="edge" d="M440 387H320V470"/><path class="edge" d="M560 387H680V470"/><path class="edge" d="M500 434V535"/>
+  <path class="edge" d="M440 558H380V610"/><path class="edge" d="M560 558H700V610"/>
+  <text class="branch" x="263" y="149">是</text><text class="branch" x="634" y="149">否</text><text class="branch" x="119" y="280">是</text><text class="branch" x="345" y="213">否</text><text class="branch" x="785" y="320">是</text><text class="branch" x="570" y="286">否</text>
+  <text class="branch" x="395" y="421">allow</text><text class="branch" x="590" y="421">deny</text><text class="branch" x="513" y="500">ask</text><text class="branch" x="398" y="550">是</text><text class="branch" x="595" y="550">否</text>
+  <g><rect class="action" x="365" y="26" width="170" height="47" rx="10"/><text class="label" x="450" y="56">确定类别</text></g>
+  <g><polygon class="decision" points="450,112 510,158 450,204 390,158"/><text class="label" x="450" y="163">read 或 meta？</text></g>
+  <g><rect class="allow" x="35" y="340" width="120" height="47" rx="10"/><text class="label" x="95" y="370">放行</text></g>
+  <g><polygon class="decision" points="655,198 715,245 655,292 595,245"/><text class="label" x="655" y="250">硬拒绝命令？</text></g>
+  <g><rect class="deny" x="745" y="340" width="120" height="47" rx="10"/><text class="label" x="805" y="370">拒绝</text></g>
+  <g><polygon class="decision" points="500,340 560,387 500,434 440,387"/><text class="label" x="500" y="392">矩阵结果？</text></g>
+  <g><rect class="allow" x="260" y="470" width="120" height="47" rx="10"/><text class="label" x="320" y="500">放行</text></g>
+  <g><rect class="deny" x="620" y="470" width="120" height="47" rx="10"/><text class="label" x="680" y="500">拒绝</text></g>
+  <g><rect class="decision" x="380" y="535" width="240" height="47" rx="10"/><text class="label" x="500" y="555">已记住总是允许，或</text><text class="label" x="500" y="574">--allow 预先批准？</text></g>
+  <g><rect class="allow" x="320" y="610" width="120" height="47" rx="10"/><text class="label" x="380" y="640">放行</text></g>
+  <g><rect class="ask" x="640" y="610" width="120" height="47" rx="10"/><text class="label" x="700" y="640">交给人审批</text></g>
+</svg>

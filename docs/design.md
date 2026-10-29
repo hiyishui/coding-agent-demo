@@ -200,6 +200,8 @@ run_turn(user_text):
 
 ### 序列图：一次输入的完整一轮
 
+按步骤画的流程图（含每一步写入哪种事件）见[代码导读](./code-walkthrough.md#一次输入的业务流程)；下面的序列图展示各模块之间逐条消息的时序。
+
 ```mermaid
 sequenceDiagram
     autonumber

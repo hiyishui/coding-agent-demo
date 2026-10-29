@@ -54,25 +54,37 @@ uv run minicode -C /tmp/demo --mode auto-edit \
 
 ### 模块关系
 
-```mermaid
-flowchart TD
-    accTitle: minicode 模块依赖关系
-    accDescr: cli 组装所有部件并驱动 Agent；Agent 依赖事件日志、模型适配器、权限、工具注册表和上下文模块；所有模块都使用 messages 中定义的数据类型。
-    CLI["cli.py<br/>入口：组装部件"] --> A["agent.py<br/>Agent 循环"]
-    CLI --> CF["config.py<br/>配置"]
-    CLI --> UI["ui.py<br/>终端界面"]
-    CLI --> MCP["mcp_client.py<br/>外部工具"]
-    A --> EV["events.py<br/>事件日志"]
-    A --> P["providers/<br/>模型适配器"]
-    A --> PM["permissions.py<br/>权限"]
-    A --> T["tools/<br/>工具"]
-    A --> CTX["context.py<br/>上下文"]
-    MCP --> T
-    T --> PM
-    EV --> MSG["messages.py<br/>数据类型"]
-    P --> MSG
-    T --> MSG
-```
+![minicode 模块依赖关系](./assets/module-dependencies.svg)
+
+[查看 Mermaid 源码](./diagrams/module-dependencies.mmd)
+
+### 一次输入的业务流程
+
+用户每输入一次，Agent 就按下图走一轮：先记录，再调 LLM，模型要用工具就逐个执行并记录结果，然后**带着新的工具结果再调一次 LLM**，如此循环，直到模型不再要求使用工具，才把回答返回给用户。图中黄色的节点表示“写入事件日志”，可以对照 `.minicode/sessions/` 下的日志一行行看。
+
+![一次用户输入的完整业务流程](./assets/agent-turn-flow.svg)
+
+[查看 Mermaid 源码](./diagrams/agent-turn-flow.mmd)
+
+| 步骤 | 做什么 | 代码位置 | 写入的事件 |
+| --- | --- | --- | --- |
+| 用户输入 | REPL 读到一行，或命令行的 `--task` | `cli.run_repl` / `cli.run_headless` → `Agent.run_turn` | 无 |
+| ① | 把用户输入记下来 | `Agent._record` → `SessionLog.append` | `user_message` |
+| ② | 从全部事件重建对话、待办清单、用量等 | `Agent.state` → `events.reduce` | 无 |
+| ③ | 检查步数、token、费用是否超出预算 | `Agent._check_budget` | 超出时写 `paused` |
+| ④ | 估算上下文大小，超过窗口的 75% 就压缩，然后重新开始本轮循环 | `context.needs_compaction` → `Agent.compact` | `compaction` |
+| ⑤ | 把系统提示词、完整对话和工具清单发给模型；遇到可重试的错误就退避重试 | `Agent._call_model` → `Provider.complete` | 无 |
+| ⑥ | 记下模型的回复：它说的话，以及它要调用的工具 | `run_turn` 中的 `_record` | `assistant_message` |
+| ⑦ | 判断模型是否要调用工具（`stop_reason` 为 `tool_use` 且有工具调用） | `run_turn` | 无 |
+| ⑧ | 不调用工具：本轮结束，回答交给 CLI 显示 | `TurnResult("done")` → `cli` | 无 |
+| ⑨ | 逐个处理工具调用：权限决策 → 记录审批 → 执行工具或生成拒绝说明 → 记录结果 | `Agent._execute`、`Agent._approve`、`PermissionPolicy.decide`、`ToolRegistry.run` | `approval`、`tool_result`（`update_todos` 还会写 `todos_updated`） |
+| ⑩ | 连续 3 次工具失败（审批拒绝不计入）就暂停，否则回到 ② | `run_turn`、`MAX_CONSECUTIVE_FAILURES` | 暂停时写 `paused` |
+
+**工具结果是怎么交给 LLM 的？** 第 ⑨ 步把结果写成 `tool_result` 事件后，流程回到第 ② 步。`reduce` 重建出的对话末尾就多了这条结果，第 ⑤ 步再调用 LLM 时，它就随完整对话一起发了出去。整个过程中没有专门“发送结果”的代码，靠的就是“写日志 → 重建对话 → 发送完整对话”这个循环。
+
+以修复 buggy-calc 为例，这个循环一共转了 8 圈：前 7 圈模型依次调用 `update_todos`、`list_files`、`read_file`、`run_command`（测试失败）、`edit_file`、`run_command`（测试通过）、`update_todos`，第 8 圈模型不再调用工具，直接给出总结。
+
+图里省略了两个细节：模型调用了不存在的工具时，跳过权限决策，直接记录一条“未知工具”的错误结果；按 Ctrl-C 中断时怎样补齐结果，见 [design.md 第 7 节的中断处理表](./design.md#中断处理)。逐条消息的时序可以看 [design.md 第 7 节的序列图](./design.md#序列图一次输入的完整一轮)。
 
 ### 文件一览
 
@@ -252,7 +264,7 @@ Agent(
 
 ### run_turn：一轮对话
 
-用户每输入一次，`cli.py` 就调用一次 `run_turn`。完整的序列图见 [design.md 第 7 节](./design.md#序列图一次输入的完整一轮)，这里看去掉了异常处理的简化版：
+用户每输入一次，`cli.py` 就调用一次 `run_turn`。流程图见第一节的[一次输入的业务流程](#一次输入的业务流程)，完整的序列图见 [design.md 第 7 节](./design.md#序列图一次输入的完整一轮)。这里看去掉了异常处理的简化版：
 
 ```python
 def run_turn(self, user_text: str) -> TurnResult:
@@ -418,21 +430,9 @@ def classify_command(command: str, workspace: Path | None = None) -> CommandClas
 
 [PermissionPolicy.decide](../src/minicode/permissions.py) 先确定这次调用属于哪一“列”：文件工具就是它的 `kind`（read、edit、meta、mcp），命令则是上面分出的四类之一。然后按下面的流程决定：
 
-```mermaid
-flowchart TD
-    accTitle: PermissionPolicy.decide 的决策流程
-    accDescr: 读取和 meta 类直接放行，硬拒绝命令直接拒绝；其余查运行模式矩阵，矩阵为 ask 时再看是否已被记住或预先批准，都没有才交给人审批。
-    S["确定类别"] --> R{"read 或 meta？"}
-    R -->|"是"| AL["放行"]
-    R -->|"否"| D{"硬拒绝命令？"}
-    D -->|"是"| DN["拒绝"]
-    D -->|"否"| M{"查矩阵：MATRIX[模式][类别]"}
-    M -->|"allow"| AL
-    M -->|"deny"| DN
-    M -->|"ask"| RM{"本会话已选总是允许，<br/>或命令行 --allow 预先批准？"}
-    RM -->|"是"| AL
-    RM -->|"否"| ASK["交给 Approver 问人"]
-```
+![PermissionPolicy.decide 的决策流程](./assets/permission-decision.svg)
+
+[查看 Mermaid 源码](./diagrams/permission-decision.mmd)
 
 `MATRIX` 就是 design.md 第 9 节那张“模式 × 类别”的表，直接写成了一个字典。
 

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 510" role="img" aria-labelledby="title desc">
+  <title id="title">minicode 模块依赖关系</title>
+  <desc id="desc">cli 组装并驱动 Agent。Agent 依赖 events、providers、permissions、tools 和 context；相关模块使用 messages 中的数据类型。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#64748b"/></marker>
+    <style>
+      text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.edge{fill:none;stroke:#64748b;stroke-width:1.7;marker-end:url(#arrow)}
+      .node{fill:#f8fafc;stroke:#94a3b8;stroke-width:1.5}.core{fill:#e0f2fe;stroke:#0284c7;stroke-width:2}.data{fill:#fef3c7;stroke:#d97706;stroke-width:1.7}
+      .name{font-size:15px;font-weight:650;fill:#0f172a;text-anchor:middle}.sub{font-size:12px;fill:#475569;text-anchor:middle}.label{font-size:12px;fill:#475569}
+    </style>
+  </defs>
+  <rect width="1000" height="510" rx="14" fill="#fff"/>
+  <path class="edge" d="M465 88V124H145V158"/><path class="edge" d="M485 88V124H355V158"/>
+  <path class="edge" d="M540 88V158"/><path class="edge" d="M555 88V124H775V158"/>
+  <path class="edge" d="M500 205V280H100V320"/><path class="edge" d="M520 205V280H300V320"/>
+  <path class="edge" d="M540 205V320"/><path class="edge" d="M560 205V280H700V320"/><path class="edge" d="M580 205V280H900V320"/>
+  <path class="edge" d="M775 205V285H700V320"/><path class="edge" d="M700 367V420H500V445"/>
+  <path class="edge" d="M100 367V405H430V445"/><path class="edge" d="M300 367V405H480V445"/><path class="edge" d="M700 367V405H540V445"/>
+  <g><rect class="core" x="425" y="35" width="150" height="53" rx="10"/><text class="name" x="500" y="58">cli.py</text><text class="sub" x="500" y="77">入口：组装部件</text></g>
+  <g><rect class="node" x="75" y="158" width="140" height="47" rx="9"/><text class="name" x="145" y="187">config.py</text></g>
+  <g><rect class="node" x="285" y="158" width="140" height="47" rx="9"/><text class="name" x="355" y="187">ui.py</text></g>
+  <g><rect class="core" x="465" y="158" width="150" height="47" rx="9"/><text class="name" x="540" y="187">agent.py</text></g>
+  <g><rect class="node" x="700" y="158" width="150" height="47" rx="9"/><text class="name" x="775" y="187">mcp_client.py</text></g>
+  <g><rect class="node" x="35" y="320" width="130" height="47" rx="9"/><text class="name" x="100" y="349">events.py</text></g>
+  <g><rect class="node" x="230" y="320" width="140" height="47" rx="9"/><text class="name" x="300" y="349">providers/</text></g>
+  <g><rect class="node" x="430" y="320" width="140" height="47" rx="9"/><text class="name" x="500" y="349">permissions.py</text></g>
+  <g><rect class="node" x="635" y="320" width="130" height="47" rx="9"/><text class="name" x="700" y="349">tools/</text></g>
+  <g><rect class="node" x="835" y="320" width="130" height="47" rx="9"/><text class="name" x="900" y="349">context.py</text></g>
+  <g><rect class="data" x="425" y="445" width="150" height="47" rx="9"/><text class="name" x="500" y="474">messages.py</text></g>
+  <text class="label" x="15" y="18">箭头表示依赖或组装关系</text>
+</svg>

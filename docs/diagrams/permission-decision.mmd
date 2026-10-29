@@ -1,0 +1,13 @@
+flowchart TD
+    accTitle: PermissionPolicy.decide 的决策流程
+    accDescr: 读取和 meta 类直接放行，硬拒绝命令直接拒绝；其余查运行模式矩阵，矩阵为 ask 时再看是否已被记住或预先批准，都没有才交给人审批。
+    S["确定类别"] --> R{"read 或 meta？"}
+    R -->|"是"| AL["放行"]
+    R -->|"否"| D{"硬拒绝命令？"}
+    D -->|"是"| DN["拒绝"]
+    D -->|"否"| M{"查矩阵：MATRIX[模式][类别]"}
+    M -->|"allow"| AL
+    M -->|"deny"| DN
+    M -->|"ask"| RM{"本会话已选总是允许，<br/>或命令行 --allow 预先批准？"}
+    RM -->|"是"| AL
+    RM -->|"否"| ASK["交给 Approver 问人"]

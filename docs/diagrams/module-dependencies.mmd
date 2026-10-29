@@ -1,0 +1,17 @@
+flowchart TD
+    accTitle: minicode 模块依赖关系
+    accDescr: cli 组装所有部件并驱动 Agent；Agent 依赖事件日志、模型适配器、权限、工具注册表和上下文模块；所有模块都使用 messages 中定义的数据类型。
+    CLI["cli.py<br/>入口：组装部件"] --> A["agent.py<br/>Agent 循环"]
+    CLI --> CF["config.py<br/>配置"]
+    CLI --> UI["ui.py<br/>终端界面"]
+    CLI --> MCP["mcp_client.py<br/>外部工具"]
+    A --> EV["events.py<br/>事件日志"]
+    A --> P["providers/<br/>模型适配器"]
+    A --> PM["permissions.py<br/>权限"]
+    A --> T["tools/<br/>工具"]
+    A --> CTX["context.py<br/>上下文"]
+    MCP --> T
+    T --> PM
+    EV --> MSG["messages.py<br/>数据类型"]
+    P --> MSG
+    T --> MSG
