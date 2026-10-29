@@ -84,7 +84,7 @@ uv run minicode -C /tmp/demo --mode auto-edit \
 
 以修复 buggy-calc 为例，这个循环一共转了 8 圈：前 7 圈模型依次调用 `update_todos`、`list_files`、`read_file`、`run_command`（测试失败）、`edit_file`、`run_command`（测试通过）、`update_todos`，第 8 圈模型不再调用工具，直接给出总结。
 
-图里省略了两个细节：模型调用了不存在的工具时，跳过权限决策，直接记录一条“未知工具”的错误结果；按 Ctrl-C 中断时怎样补齐结果，见 [design.md 第 7 节的中断处理表](./design.md#中断处理)。逐条消息的时序可以看 [design.md 第 7 节的序列图](./design.md#序列图一次输入的完整一轮)。
+图里省略了两个细节：模型调用了不存在的工具时，跳过权限决策，直接记录一条“未知工具”的错误结果；按 Ctrl-C 中断时怎样补齐结果，见 [design.md 第 7 节的中断处理表](./design.md#中断处理)。想看每一步由哪个模块的哪个函数完成，可以看 [design.md 第 7 节的序列图](./design.md#序列图一次输入的完整一轮)，它和这张流程图按 ①–⑩ 一一对应。
 
 ### 文件一览
 

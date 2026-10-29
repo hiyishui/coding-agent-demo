@@ -200,11 +200,11 @@ run_turn(user_text):
 
 ### 序列图：一次输入的完整一轮
 
-按步骤画的流程图（含每一步写入哪种事件）见[代码导读](./code-walkthrough.md#一次输入的业务流程)；下面的序列图展示各模块之间逐条消息的时序。
+这张序列图和[代码导读里的业务流程图](./code-walkthrough.md#一次输入的业务流程)一一对应：图中的 ①–⑩ 就是流程图里的步骤编号，这里从代码的角度展示每一步由哪个模块的哪个函数完成。黄色背景框出的是写入事件日志的调用，对应流程图里的黄色节点；灰色的注释框标出步骤编号。
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#eff6ff", "primaryBorderColor": "#3b82f6", "primaryTextColor": "#0f172a", "lineColor": "#64748b", "noteBkgColor": "#f1f5f9", "noteBorderColor": "#94a3b8", "noteTextColor": "#0f172a"}}}%%
 sequenceDiagram
-    autonumber
     actor U as 用户 / CI
     participant CLI as cli.py
     participant A as Agent（agent.py）
@@ -214,72 +214,96 @@ sequenceDiagram
     participant AP as Approver
     participant R as ToolRegistry（tools/）
 
-    U->>CLI: 输入任务（REPL 中的一行，或 --task）
+    U->>CLI: 输入一条任务（REPL 中的一行，或 --task）
     CLI->>A: run_turn(user_text)
-    A->>L: append(user_message)
-    loop 直到模型不再调用工具
-        A->>L: reduce(events)：重建消息、todos、用量、连续失败次数
+    Note over A,R: ① 记录用户输入
+    rect rgba(254, 243, 199, 0.7)
+        A->>L: _record("user_message") → SessionLog.append
+    end
+    loop while True：直到模型不再调用工具
+        Note over A,R: ② 从日志重建对话
+        A->>L: self.state → reduce(events)
+        L-->>A: SessionState（messages、todos、usage、consecutive_failures）
+        Note over A,R: ③ 检查预算
+        A->>A: _check_budget(state, steps_at_start)
         break 超出步数 / token / 费用预算
-            A->>L: append(paused)
+            rect rgba(254, 243, 199, 0.7)
+                A->>L: _pause → _record("paused")
+            end
             A-->>CLI: TurnResult("paused")
         end
-        opt 估算上下文超过窗口的 75%
-            A->>A: compact()（见第 10 节），成功则重新进入循环
+        Note over A,R: ④ 上下文超过窗口的 75% 就压缩
+        opt needs_compaction(events, context_window)
+            A->>P: compact()：让模型按模板总结旧对话（见第 10 节）
+            P-->>A: 摘要
+            rect rgba(254, 243, 199, 0.7)
+                A->>L: _record("compaction")
+            end
+            Note over A,L: 压缩成功则 continue，回到 ②
         end
-        A->>P: complete(system, messages, 全部工具定义, on_text)
+        Note over A,R: ⑤ 调用 LLM
+        A->>P: _call_model → complete(system, state.messages, registry.specs(), on_text)
         opt 抛出 RetryableError（429、5xx、超时）
-            A->>A: sleep(退避时间) 后重试，最多 4 次
+            A->>A: sleep(retry.delay(...)) 后重试，最多 4 次
+        end
+        break ProviderError（不可重试，或重试用尽）
+            A-->>CLI: TurnResult("error")
         end
         P-->>A: ModelResponse(blocks, stop_reason, usage)
-        A->>L: append(assistant_message)
-        Note over A,P: 例：第 4 次调用返回 run_command("python -m pytest -q")
-        break stop_reason 不是 tool_use
-            A-->>CLI: TurnResult("done", 最终回答)
+        Note over A,R: ⑥ 记录模型回复
+        rect rgba(254, 243, 199, 0.7)
+            A->>L: _record("assistant_message")：文字、工具调用、stop_reason、usage
         end
-        loop 依次处理每个 ToolCall
-            A->>PP: decide(kind, call)
-            alt allow：读取、meta、白名单命令、已预先批准或本会话总是允许
-                PP-->>A: Decision(allow)
-            else ask：修改文件、非白名单命令、联网命令、MCP 工具（视模式而定）
-                PP-->>A: Decision(ask, reason)
+        Note over A,R: ⑦ 要调用工具吗？
+        break stop_reason 不是 tool_use，或 response.tool_calls 为空
+            A-->>CLI: ⑧ TurnResult("done", response.text)
+        end
+        Note over A,R: ⑨ 逐个处理工具调用
+        loop for call in response.tool_calls → _execute(call)
+            A->>PP: _approve → decide(tool.kind, call)
+            PP-->>A: Decision（allow、ask 或 deny）
+            opt 结论是 ask
                 A->>AP: ask(call, decision)
                 AP-->>A: ApprovalAnswer（交互模式由用户选 y、n、a，无头模式一律拒绝）
-            else deny：硬拒绝命令，或 plan 模式下的修改
-                PP-->>A: Decision(deny, reason)
             end
-            A->>L: append(approval)
-            Note over A,PP: 例：pytest 属于白名单，auto-edit 模式下 edit_file 也直接放行
+            rect rgba(254, 243, 199, 0.7)
+                A->>L: _record("approval")：decision、by、reason
+            end
             alt 允许
-                A->>R: run(call, ctx)：校验参数、执行 handler、截断输出
+                A->>R: run(call, _tool_context())：校验参数、执行 handler、截断输出
                 R-->>A: ToolOutput(content, is_error)
             else 拒绝
-                A->>A: _denial_message()：拒绝原因作为 is_error 结果
+                A->>A: _denial_message(decision, by)：拒绝原因作为 is_error 结果
             end
-            A->>L: append(tool_result)
-            Note over A,R: 例：pytest 返回 exit code 1，is_error 为真，交还模型去修
+            rect rgba(254, 243, 199, 0.7)
+                A->>L: _record("tool_result")：call_id、content、is_error
+            end
         end
-        break 连续 3 次工具失败（审批拒绝不计入）
-            A->>L: append(paused)
+        Note over A,R: ⑩ 检查连续失败
+        break self.state.consecutive_failures ≥ 3
+            rect rgba(254, 243, 199, 0.7)
+                A->>L: _pause → _record("paused")
+            end
             A-->>CLI: TurnResult("paused")
         end
+        Note over A,L: 回到 ②：重建出的对话里已包含刚写入的 tool_result，⑤ 会把它随完整对话发给模型
     end
-    CLI-->>U: 显示最终回答（无头模式按结果返回退出码 0、1、2）
+    CLI-->>U: 显示最终回答（无头模式按结果返回退出码）
 ```
 
 | 步骤 | 代码位置 | 说明 |
 | --- | --- | --- |
-| 1–2 | `cli.py` 的 `run_repl` / `run_headless` → `Agent.run_turn` | REPL 中以 `/` 开头的输入由 `handle_command` 处理，不进入 `run_turn` |
-| 3、5、11、19、23、24 | `Agent._record` → `SessionLog.append` | 每个事件追加一行 JSONL 并立即 flush，进程随时被杀也不丢已发生的事件 |
-| 4 | `Agent.state` 属性 → `events.reduce` | 每一轮都从完整事件列表重新归约，没有其他内存状态 |
-| 5–6 | `Agent._check_budget` → `Agent._pause` | 步数按本轮计；token 与费用按整个会话计，含 explore 子代理和压缩的用量 |
-| 7 | `context.needs_compaction` → `Agent.compact` | 每次调用模型前最多压缩一次，避免压缩无效时死循环 |
-| 8–10 | `Agent._call_model` → `Provider.complete`；`RetryPolicy.delay` | 工具定义始终全部发送，模式只在执行时生效；文本经 `on_text` 流式显示 |
-| 12 | `run_turn` 中对 `stop_reason` 的判断 | `max_tokens` 截断时额外提示“回答可能不完整” |
-| 13–18 | `Agent._approve` → `PermissionPolicy.decide` → `InteractiveApprover.ask` / `HeadlessApprover.ask` | 用户选“总是允许”时调用 `PermissionPolicy.remember`；联网命令不能被记住 |
-| 20–21 | `ToolRegistry.run` → `Tool.handler` | 未知工具不经审批，直接返回“未知工具”错误；handler 抛出的异常都转成 `is_error` 结果 |
-| 22 | `agent._denial_message` | 用户拒绝时附上用户给的理由，让模型据此调整方案 |
-| 24–25 | `MAX_CONSECUTIVE_FAILURES = 3` | 计数由 `reduce` 维护：成功结果或新的用户输入会清零 |
-| 26 | `cli.run_headless` 的 `EXIT_CODES` | 0 = 完成，2 = 暂停，其余（错误、中断）为 1 |
+| 开始 | `cli.run_repl` / `cli.run_headless` → `Agent.run_turn` | REPL 中以 `/` 开头的输入由 `handle_command` 处理，不进入 `run_turn` |
+| ① | `Agent._record` → `SessionLog.append` | 每个事件追加一行 JSONL 并立即 flush，进程随时被杀也不丢已发生的事件 |
+| ② | `Agent.state` 属性 → `events.reduce` | 每一圈都从完整事件列表重新归约，Agent 没有其他内存状态 |
+| ③ | `Agent._check_budget` → `Agent._pause` | 步数按本轮计；token 与费用按整个会话计，含 explore 子代理和压缩的用量 |
+| ④ | `context.needs_compaction` → `Agent.compact` | 每次调用模型前最多压缩一次（`just_compacted` 标记），避免压缩无效时死循环；压缩失败也直接往下走 |
+| ⑤ | `Agent._call_model` → `Provider.complete`；`RetryPolicy.delay` | 工具定义始终全部发送，模式只在执行时生效；文本经 `on_text` 流式显示；不可重试的错误直接结束本轮，返回 `error` |
+| ⑥ | `run_turn` 中的 `self._record("assistant_message", ...)` | 记录的 `usage` 是之后估算上下文大小、计算预算的依据 |
+| ⑦ | `run_turn` 中对 `stop_reason` 和 `tool_calls` 的判断 | `max_tokens` 截断时额外提示“回答可能不完整” |
+| ⑧ | `TurnResult("done")` → `cli` | 无头模式的退出码：0 = 完成，2 = 暂停，其余（错误、中断）为 1 |
+| ⑨ | `Agent._execute` → `Agent._approve` → `PermissionPolicy.decide` → `InteractiveApprover.ask` / `HeadlessApprover.ask` → `ToolRegistry.run` | 用户选“总是允许”时调用 `PermissionPolicy.remember`，联网命令不能被记住；未知工具不经审批，直接由 `ToolRegistry.run` 返回“未知工具”的错误结果；handler 抛出的异常都转成 `is_error` 结果；`update_todos` 执行时还会经 `ctx.on_todos` 写一条 `todos_updated`；执行前后分别调用 `on_tool_call`、`on_tool_result` 通知界面 |
+| ⑩ | `MAX_CONSECUTIVE_FAILURES = 3` | 计数由 `reduce` 维护：成功的工具结果或新的用户输入会清零，审批拒绝不计入 |
 
 ### 中断处理
 
@@ -287,8 +311,8 @@ sequenceDiagram
 
 | 中断发生在 | 代码怎么处理 | 日志里留下什么 | 之后怎样继续 |
 | --- | --- | --- | --- |
-| 调用模型时（步骤 8–10） | `run_turn` 捕获 `KeyboardInterrupt`，调用 `_interrupted` | 一条 `interrupted`；这次调用没有 `assistant_message` | 历史停在上一条消息，直接输入新指示即可 |
-| 执行工具时（步骤 13–23） | 为本批尚未写入结果的调用补一条 `CANCELLED_RESULT`（“用户已取消，未执行”，`is_error`），再调用 `_interrupted` | 补齐的 `tool_result` 加一条 `interrupted` | 每个 tool_use 都有配对结果，历史合法 |
+| 调用模型时（⑤） | `run_turn` 捕获 `KeyboardInterrupt`，调用 `_interrupted` | 一条 `interrupted`；这次调用没有 `assistant_message` | 历史停在上一条消息，直接输入新指示即可 |
+| 执行工具时（⑨） | 为本批尚未写入结果的调用补一条 `CANCELLED_RESULT`（“用户已取消，未执行”，`is_error`），再调用 `_interrupted` | 补齐的 `tool_result` 加一条 `interrupted` | 每个 tool_use 都有配对结果，历史合法 |
 | explore 子代理运行时 | 子代理的 `run_turn` 返回 interrupted 后，explore 重新抛出 `KeyboardInterrupt` | 按“执行工具时”处理 | 同上 |
 | 进程被杀（任何时刻） | 代码来不及处理 | 日志停在最后一行；最后一行残缺时，`SessionLog.load` 丢弃它 | `--resume` 后，`reduce` 的 `close_dangling` 为悬空调用补“操作已中断，未执行” |
 | REPL 等待输入时 | `run_repl` 提示用 `/exit` 或 Ctrl-D 退出 | 无 | 不受影响 |
@@ -584,7 +608,7 @@ sequenceDiagram
 | 4–5 | `tools.builtin_registry`、`make_explore_tool`、`cli._connect_mcp` | 工具集在会话开始时确定，之后不再变化 |
 | 6–7 | `SessionLog.load` / `SessionLog.create` | 恢复时不重写 `session_start`；第一轮 `reduce` 会为悬空调用补上结果 |
 | 8 | `Agent(...)`、`context.build_system_prompt` | 无头模式用 `HeadlessApprover`，交互模式用 `InteractiveApprover`；`--allow` 写进 `PermissionPolicy.preapproved` |
-| 9–11 | `cli.run_headless` | 退出码见第 7 节步骤 26 |
+| 9–11 | `cli.run_headless` | 退出码见第 7 节对照表的 ⑧ |
 | 12–14 | `cli.run_repl`、`cli.handle_command` | `/mode` 只改 `PermissionPolicy.mode`，不改系统提示词 |
 | 15 | `cli.main` 的 `finally` | 正常退出、出错或中断都会执行 |
 
